@@ -89,6 +89,13 @@ namespace Shaqlouba
             IntPtr target = Native.GetForegroundWindow();
             if (target == IntPtr.Zero) return;
 
+            KeyMap map = KeyMap.For(Native.LayoutOf(target));
+            if (map == null)
+            {
+                notify("لازم يكون في لغة كيبورد عربية ولغة إنجليزية مثبتين في ويندوز.");
+                return;
+            }
+
             ClipboardSnapshot saved = ClipboardEx.Take(owner);
             if (saved == null)
             {
@@ -149,7 +156,7 @@ namespace Shaqlouba
                 }
                 else
                 {
-                    flipped = wholeLine ? KeyMap.FlipLastRun(text, out direction) : KeyMap.Flip(text, out direction);
+                    flipped = wholeLine ? map.FlipLastRun(text, out direction) : map.Flip(text, out direction);
                 }
 
                 if (direction == Direction.None || flipped == text)
@@ -173,7 +180,7 @@ namespace Shaqlouba
                 uint written = Native.GetClipboardSequenceNumber();
                 await Task.Delay(ClipboardSettleMs);
                 Native.SendChord(Native.VK_SHIFT, Native.VK_INSERT);
-                if (SwitchLayoutAfterFlip) Native.SwitchLayout(target, direction);
+                if (SwitchLayoutAfterFlip) Native.SwitchLayout(target, direction == Direction.EnToAr ? map.ArabicLayout : map.LatinLayout);
                 await Task.Delay(PasteSettleMs);
 
                 // If something else landed on the clipboard meanwhile, it's newer than what we saved.

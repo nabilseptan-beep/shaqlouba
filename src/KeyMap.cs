@@ -1,77 +1,123 @@
+using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using System.Text;
 
 namespace Shaqlouba
 {
     internal enum Direction { None, EnToAr, ArToEn }
 
-    // Rewrites text typed on the wrong layout, between US QWERTY and Arabic (101).
-    internal static class KeyMap
+    // Rewrites text typed on the wrong layout, between a Latin-script layout and an Arabic-script one.
+    // The table is read from the layouts installed in Windows, so any pair works: US, UK or French on
+    // one side, Arabic (101), (102) or AZERTY on the other.
+    internal sealed class KeyMap
     {
-        // { what a key types on the English layout, what the same key types on the Arabic layout }
-        // Keys that type the same thing on both layouts (digits, "!@#$%^&*", "-=_+", ":\"\\|") are left out.
-        // tests/KeyMapTests.cs checks this table against the layouts installed in Windows.
-        static readonly string[,] Keys =
+        const byte VK_SHIFT = 0x10;
+        const uint DontChangeKeyboardState = 4;
+        const int MaxReadings = 64;
+
+        public readonly IntPtr LatinLayout, ArabicLayout;
+
+        // { what a key types on the Latin layout, what the same key types on the Arabic layout }
+        // Keys that type the same thing on both layouts (digits, most symbols) are left out.
+        readonly Dictionary<char, string> ToArabicMap = new Dictionary<char, string>();
+        readonly Dictionary<char, char> ToEnglishMap = new Dictionary<char, char>();
+        readonly Dictionary<string, char> ToEnglishPairs = new Dictionary<string, char>();
+
+        [DllImport("user32.dll")] static extern int GetKeyboardLayoutList(int count, [Out] IntPtr[] list);
+        [DllImport("user32.dll")] static extern uint MapVirtualKeyEx(uint code, uint mapType, IntPtr layout);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int ToUnicodeEx(uint vk, uint scan, byte[] state, StringBuilder buffer, int size, uint flags, IntPtr layout);
+
+        // The layouts to flip between: the window's own layout for its script, the first installed one
+        // for the other script. Null when no Latin or no Arabic layout is installed.
+        public static KeyMap For(IntPtr currentLayout)
         {
-            { "`", "ذ" }, { "~", "ّ" }, { "(", ")" }, { ")", "(" },
-
-            { "q", "ض" }, { "w", "ص" }, { "e", "ث" }, { "r", "ق" }, { "t", "ف" },
-            { "y", "غ" }, { "u", "ع" }, { "i", "ه" }, { "o", "خ" }, { "p", "ح" },
-            { "[", "ج" }, { "]", "د" },
-
-            { "Q", "َ" }, { "W", "ً" }, { "E", "ُ" }, { "R", "ٌ" }, { "T", "لإ" },
-            { "Y", "إ" }, { "U", "‘" }, { "I", "÷" }, { "O", "×" }, { "P", "؛" },
-            { "{", "<" }, { "}", ">" },
-
-            { "a", "ش" }, { "s", "س" }, { "d", "ي" }, { "f", "ب" }, { "g", "ل" },
-            { "h", "ا" }, { "j", "ت" }, { "k", "ن" }, { "l", "م" }, { ";", "ك" }, { "'", "ط" },
-
-            { "A", "ِ" }, { "S", "ٍ" }, { "D", "]" }, { "F", "[" }, { "G", "لأ" },
-            { "H", "أ" }, { "J", "ـ" }, { "K", "،" }, { "L", "/" },
-
-            { "z", "ئ" }, { "x", "ء" }, { "c", "ؤ" }, { "v", "ر" }, { "b", "لا" },
-            { "n", "ى" }, { "m", "ة" }, { ",", "و" }, { ".", "ز" }, { "/", "ظ" },
-
-            { "Z", "~" }, { "X", "ْ" }, { "C", "}" }, { "V", "{" }, { "B", "لآ" },
-            { "N", "آ" }, { "M", "’" }, { "<", "," }, { ">", "." }, { "?", "؟" },
-        };
-
-        static readonly Dictionary<char, string> ToArabicMap = new Dictionary<char, string>();
-        static readonly Dictionary<char, char> ToEnglishMap = new Dictionary<char, char>();
-        static readonly Dictionary<string, char> ToEnglishPairs = new Dictionary<string, char>();
-
-        // Words where the two keys g+h (typed as "لا") end a word, instead of the single key b.
-        static readonly HashSet<string> GhEndings = new HashSet<string>
-        {
-            "high", "thigh", "sigh", "weigh", "neigh", "though", "although", "through", "thorough",
-            "enough", "rough", "tough", "cough", "dough", "laugh",
-        };
-
-        static KeyMap()
-        {
-            for (int i = 0; i < Keys.GetLength(0); i++)
+            IntPtr latin = IntPtr.Zero, arabic = IntPtr.Zero;
+            foreach (IntPtr layout in InstalledLayouts(currentLayout))
             {
-                char en = Keys[i, 0][0];
-                string ar = Keys[i, 1];
-                ToArabicMap[en] = ar;
-                if (ar.Length == 1) ToEnglishMap[ar[0]] = en;
-                else ToEnglishPairs[ar] = en;
+                Direction script = ScriptOfLayout(layout);
+                if (script == Direction.EnToAr && latin == IntPtr.Zero) latin = layout;
+                if (script == Direction.ArToEn && arabic == IntPtr.Zero) arabic = layout;
+            }
+            if (latin == IntPtr.Zero || arabic == IntPtr.Zero) return null;
+            return new KeyMap(latin, arabic);
+        }
+
+        public KeyMap(IntPtr latinLayout, IntPtr arabicLayout)
+        {
+            LatinLayout = latinLayout;
+            ArabicLayout = arabicLayout;
+
+            for (uint vk = 0x20; vk < 0xE0; vk++)
+            {
+                // The numpad types the same symbols on both layouts, so its "." and "/" can't be told apart from the main keys.
+                if (vk >= 0x60 && vk <= 0x6F) continue;
+
+                foreach (bool shift in new[] { false, true })
+                {
+                    string en = Typed(vk, shift, latinLayout), ar = Typed(vk, shift, arabicLayout);
+                    if (en == null || ar == null || en.Length != 1 || en == ar) continue;
+                    ToArabicMap[en[0]] = ar;
+                    if (ar.Length == 1) ToEnglishMap[ar[0]] = en[0];
+                    else ToEnglishPairs[ar] = en[0];
+                }
             }
 
             // Word turns a typed ' into a curly quote before we ever see it.
-            ToArabicMap['‘'] = "ط";
-            ToArabicMap['’'] = "ط";
+            string quoteKey;
+            if (ToArabicMap.TryGetValue('\'', out quoteKey))
+            {
+                ToArabicMap['‘'] = quoteKey;
+                ToArabicMap['’'] = quoteKey;
+            }
+        }
+
+        // The installed layouts, with the given one first.
+        public static List<IntPtr> InstalledLayouts(IntPtr first)
+        {
+            var list = new IntPtr[32];
+            int count = GetKeyboardLayoutList(list.Length, list);
+            var layouts = new List<IntPtr>();
+            if (first != IntPtr.Zero) layouts.Add(first);
+            for (int i = 0; i < count; i++)
+                if (list[i] != first) layouts.Add(list[i]);
+            return layouts;
+        }
+
+        // What a key types on a layout: null for nothing, a control character or a dead key.
+        public static string Typed(uint vk, bool shift, IntPtr layout)
+        {
+            var state = new byte[256];
+            if (shift) state[VK_SHIFT] = 0x80;
+            var buffer = new StringBuilder(8);
+            uint scan = MapVirtualKeyEx(vk, 0, layout);
+            int count = ToUnicodeEx(vk, scan, state, buffer, buffer.Capacity, DontChangeKeyboardState, layout);
+            if (count <= 0) return null;
+            string typed = buffer.ToString(0, count);
+            return typed[0] < ' ' ? null : typed;
+        }
+
+        // The script the letter keys type: EnToAr for a Latin layout, ArToEn for an Arabic one.
+        static Direction ScriptOfLayout(IntPtr layout)
+        {
+            var letters = new StringBuilder();
+            for (uint vk = 'A'; vk <= 'Z'; vk++)
+            {
+                string typed = Typed(vk, false, layout);
+                if (typed != null) letters.Append(typed);
+            }
+            return ScriptOf(letters.ToString(), 0, letters.Length);
         }
 
         // Flips the whole text in the direction its letters suggest.
-        public static string Flip(string text, out Direction direction)
+        public string Flip(string text, out Direction direction)
         {
             direction = Detect(text);
             return Convert(text, direction);
         }
 
         // Flips only the last run of same-script words, so "مرحبا hgsghl" keeps its correct start.
-        public static string FlipLastRun(string line, out Direction direction)
+        public string FlipLastRun(string line, out Direction direction)
         {
             direction = Direction.None;
             int runStart = -1;
@@ -87,6 +133,10 @@ namespace Shaqlouba
                 if (word == Direction.None) continue;
                 if (direction == Direction.None) direction = word;
                 else if (word != direction) break;
+
+                // A real English word in front of the run is the correct text, as in "Hello hgsghl".
+                // The last word is flipped regardless: it's what the hotkey was pressed for.
+                if (word == Direction.EnToAr && runStart >= 0 && Words.Contains(line.Substring(i, end - i))) break;
                 runStart = i;
             }
 
@@ -94,7 +144,7 @@ namespace Shaqlouba
             return line.Substring(0, runStart) + Convert(line.Substring(runStart), direction);
         }
 
-        public static Direction Detect(string text)
+        public Direction Detect(string text)
         {
             bool mappable = false;
             foreach (char c in text)
@@ -105,14 +155,14 @@ namespace Shaqlouba
             return mappable ? Direction.EnToAr : Direction.None;
         }
 
-        public static string Convert(string text, Direction direction)
+        public string Convert(string text, Direction direction)
         {
             if (direction == Direction.EnToAr) return ToArabic(text);
             if (direction == Direction.ArToEn) return ToEnglish(text);
             return text;
         }
 
-        static string ToArabic(string s)
+        string ToArabic(string s)
         {
             var result = new StringBuilder(s.Length);
             for (int i = 0; i < s.Length; i++)
@@ -125,39 +175,66 @@ namespace Shaqlouba
             return result.ToString();
         }
 
-        static string ToEnglish(string s)
+        string ToEnglish(string s)
         {
             var result = new StringBuilder(s.Length);
-            for (int i = 0; i < s.Length; i++)
+            int i = 0;
+            while (i < s.Length)
             {
-                if (s[i] == 'ل' && i + 1 < s.Length)
+                int end = i;
+                while (end < s.Length && !char.IsWhiteSpace(s[end])) end++;
+                if (end == i)
                 {
-                    if (s[i + 1] == 'ا')
-                    {
-                        result.Append(LooksLikeGh(result, s, i + 2) ? "gh" : "b");
-                        i++;
-                        continue;
-                    }
-
-                    char pair;
-                    if (ToEnglishPairs.TryGetValue(s.Substring(i, 2), out pair))
-                    {
-                        result.Append(pair);
-                        i++;
-                        continue;
-                    }
+                    result.Append(s[i]);
+                    i++;
+                    continue;
                 }
-
-                char en;
-                result.Append(ToEnglishMap.TryGetValue(s[i], out en) ? en : s[i]);
+                result.Append(ToEnglishWord(s.Substring(i, end - i)));
+                i = end;
             }
             return result.ToString();
+        }
+
+        // A key that types two characters, like b typing "لا", reads the same as the two keys that type
+        // them one by one (g then h), so each such spot doubles the readings of a word. The first reading
+        // the dictionary knows wins; failing that, the one-key reading, which is right far more often.
+        string ToEnglishWord(string word)
+        {
+            var readings = new List<string>();
+            Read(word, 0, new StringBuilder(word.Length), readings);
+            foreach (string reading in readings)
+                if (Words.Contains(reading)) return reading;
+            return readings[0];
+        }
+
+        // Collects the readings depth first, taking the one-key reading at every spot before the other,
+        // so the first reading collected is the all-one-key one.
+        void Read(string word, int i, StringBuilder done, List<string> readings)
+        {
+            if (readings.Count == MaxReadings) return;
+            if (i == word.Length)
+            {
+                readings.Add(done.ToString());
+                return;
+            }
+
+            int mark = done.Length;
+            char en;
+            if (i + 1 < word.Length && ToEnglishPairs.TryGetValue(word.Substring(i, 2), out en))
+            {
+                done.Append(en);
+                Read(word, i + 2, done, readings);
+                done.Length = mark;
+            }
+            done.Append(ToEnglishMap.TryGetValue(word[i], out en) ? en : word[i]);
+            Read(word, i + 1, done, readings);
+            done.Length = mark;
         }
 
         // Office capitalizes the first letter of a sentence, so "hgsghl" arrives as "Hgsghl".
         // Most capitals type a mark or a symbol on the Arabic layout, which no word starts with.
         // The ones that type a real letter are only undone where the lowercase reading is far likelier.
-        static bool IsAutoCapitalized(string s, int i)
+        bool IsAutoCapitalized(string s, int i)
         {
             char c = s[i];
             if (c < 'A' || c > 'Z') return false;
@@ -175,26 +252,6 @@ namespace Shaqlouba
             if (c == 'H') return next == 'g';        // "ال", but keep "أنا"
             if (c == 'G') return next != 'k';        // keep "لأن"
             return true;
-        }
-
-        // The Arabic layout types "لا" for the b key, and g then h type the same two characters.
-        // b is the far more common reading, except in the "-ight" and "-ough" family.
-        static bool LooksLikeGh(StringBuilder done, string s, int next)
-        {
-            int wordStart = done.Length;
-            while (wordStart > 0 && char.IsLetter(done[wordStart - 1])) wordStart--;
-            string before = done.ToString(wordStart, done.Length - wordStart).ToLowerInvariant();
-            if (before == "hi") return true;  // high, higher, highway
-
-            char after = ' ';
-            if (next < s.Length && !ToEnglishMap.TryGetValue(s[next], out after)) after = s[next];
-
-            if (after == 't')
-            {
-                if (before.EndsWith("dou")) return false;  // doubt
-                return before.EndsWith("i") || before.EndsWith("ou") || before.EndsWith("au");
-            }
-            return !char.IsLetter(after) && GhEndings.Contains(before + "gh");
         }
 
         static Direction ScriptOf(string text, int start, int end)

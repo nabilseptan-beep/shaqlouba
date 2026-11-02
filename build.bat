@@ -11,7 +11,7 @@ if not exist "%CSC%" (
 )
 
 "%CSC%" /nologo /codepage:65001 /target:winexe /optimize+ /out:Shaqlouba.exe ^
-    /win32icon:assets\icon.ico /resource:assets\icon.ico,Shaqlouba.icon.ico ^
+    /win32icon:assets\icon.ico /resource:assets\icon.ico,Shaqlouba.icon.ico /resource:assets\words.txt,Shaqlouba.words.txt ^
     /reference:System.Windows.Forms.dll /reference:System.Drawing.dll ^
     src\*.cs
 if errorlevel 1 exit /b 1

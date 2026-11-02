@@ -96,7 +96,7 @@ namespace Shaqlouba
         [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int vk);
         [DllImport("user32.dll")] static extern uint MapVirtualKey(uint code, uint mapType);
         [DllImport("user32.dll", SetLastError = true)] static extern uint SendInput(uint count, INPUT[] inputs, int size);
-        [DllImport("user32.dll")] static extern int GetKeyboardLayoutList(int count, [Out] IntPtr[] list);
+        [DllImport("user32.dll")] static extern IntPtr GetKeyboardLayout(uint thread);
         [DllImport("user32.dll")] static extern bool PostMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
         [DllImport("user32.dll")] public static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr module, WinEventProc proc, uint process, uint thread, uint flags);
         [DllImport("user32.dll")] public static extern bool UnhookWinEvent(IntPtr hook);
@@ -170,21 +170,17 @@ namespace Shaqlouba
             return input;
         }
 
-        // Asks the window to switch to the first installed layout of the language the text is now in.
-        public static void SwitchLayout(IntPtr window, Direction direction)
+        // The keyboard layout a window is typing with.
+        public static IntPtr LayoutOf(IntPtr window)
         {
-            const int Arabic = 0x01, English = 0x09;
-            var list = new IntPtr[32];
-            int count = GetKeyboardLayoutList(list.Length, list);
+            uint processId;
+            return GetKeyboardLayout(GetWindowThreadProcessId(window, out processId));
+        }
 
-            IntPtr layout = IntPtr.Zero;
-            for (int i = 0; i < count && layout == IntPtr.Zero; i++)
-            {
-                int language = (int)(list[i].ToInt64() & 0x3FF);
-                if (language == (direction == Direction.EnToAr ? Arabic : English)) layout = list[i];
-            }
-
-            if (layout != IntPtr.Zero) PostMessage(window, WM_INPUTLANGCHANGEREQUEST, IntPtr.Zero, layout);
+        // Asks the window to switch to a keyboard layout.
+        public static void SwitchLayout(IntPtr window, IntPtr layout)
+        {
+            PostMessage(window, WM_INPUTLANGCHANGEREQUEST, IntPtr.Zero, layout);
         }
     }
 }
