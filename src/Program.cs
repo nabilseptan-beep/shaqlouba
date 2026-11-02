@@ -119,6 +119,7 @@ namespace Shaqlouba
             menu.Items.Add(startupItem);
 
             menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add("عن البرنامج...", null, delegate { ShowAbout(); });
             menu.Items.Add("خروج", null, delegate { ExitThread(); });
 
             tray.Icon = LoadIcon();
@@ -198,6 +199,12 @@ namespace Shaqlouba
                 }
             }
             ApplyHotkey(settings.Hotkey);
+        }
+
+        async void ShowAbout()
+        {
+            await Task.Delay(MenuCloseDelayMs);
+            using (var form = new AboutForm()) form.ShowDialog();
         }
 
         void Notify(string message)
