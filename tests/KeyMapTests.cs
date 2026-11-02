@@ -95,10 +95,23 @@ namespace Shaqlouba
                 + "فهم حب زعل فرح ضحك نام اكل شرب لعب كتب درس فتح قفل بص طلع نزل دخل خرج رجع فضل بدأ خلص غاب حضر";
             foreach (string word in words.Split(' '))
             {
-                string typed = map.Convert(word, Direction.ArToEn);
+                string typed = TypedOnEnglishLayout(word);
                 if (Words.Contains(typed))
                     Fail(string.Format("[{0}] typed on the English layout is [{1}], which the dictionary takes for English", word, typed));
             }
+        }
+
+        // Key by key, so "لا" is the b key, not the reading the dictionary would prefer.
+        static string TypedOnEnglishLayout(string word)
+        {
+            var typed = new StringBuilder();
+            for (int i = 0; i < word.Length; i++)
+            {
+                bool pair = i + 1 < word.Length && word.Substring(i, 2) == "لا";
+                typed.Append(map.Convert(pair ? "لا" : word[i].ToString(), Direction.ArToEn));
+                if (pair) i++;
+            }
+            return typed.ToString();
         }
 
         // The window's own layout is used for its script, and the first installed one for the other.
