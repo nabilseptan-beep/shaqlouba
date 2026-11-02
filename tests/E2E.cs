@@ -473,10 +473,36 @@ namespace Shaqlouba
                 formField = box;
                 Wait(100);
 
-                // Change the hotkey: second item in the menu.
+                // Start with Windows: fourth item, separators are skipped.
+                bool wasEnabled;
+                using (var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKey))
+                    wasEnabled = key.GetValue("Shaqlouba") != null;
+                if (wasEnabled) throw new InvalidOperationException("autostart already on, not touching it");
+
                 ClickTrayIcon(true);
                 Wait(600);
                 Screenshot("tray_menu.png");
+                MenuClick("مع ويندوز");
+                Wait(400);
+                string value;
+                using (var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKey))
+                    value = key.GetValue("Shaqlouba") as string;
+                Check("Menu: start with Windows turns on", value != null && value.Contains("Shaqlouba.exe"), "value is [" + value + "]");
+
+                Focus(form.Handle);
+                ClickTrayIcon(true);
+                Wait(600);
+                MenuClick("مع ويندوز");
+                Wait(400);
+                using (var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKey))
+                    value = key.GetValue("Shaqlouba") as string;
+                Check("Menu: start with Windows turns off", value == null, "value is [" + value + "]");
+
+                // Change the hotkey: second item in the menu. Last, because the new hotkey's notification
+                // banner sits next to the tray for a while.
+                Focus(form.Handle);
+                ClickTrayIcon(true);
+                Wait(600);
                 MenuClick("الاختصار");
                 Wait(700);
                 EnsureAppForeground();
@@ -499,30 +525,6 @@ namespace Shaqlouba
                 PressHotkey();
                 Wait(FlipWaitMs);
                 Check("Menu: old hotkey no longer flips", box.Text == "hgsghl", "got [" + box.Text + "]");
-
-                // Start with Windows: fourth item, separators are skipped.
-                bool wasEnabled;
-                using (var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKey))
-                    wasEnabled = key.GetValue("Shaqlouba") != null;
-                if (wasEnabled) throw new InvalidOperationException("autostart already on, not touching it");
-
-                ClickTrayIcon(true);
-                Wait(600);
-                MenuClick("مع ويندوز");
-                Wait(400);
-                string value;
-                using (var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKey))
-                    value = key.GetValue("Shaqlouba") as string;
-                Check("Menu: start with Windows turns on", value != null && value.Contains("Shaqlouba.exe"), "value is [" + value + "]");
-
-                Focus(form.Handle);
-                ClickTrayIcon(true);
-                Wait(600);
-                MenuClick("مع ويندوز");
-                Wait(400);
-                using (var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKey))
-                    value = key.GetValue("Shaqlouba") as string;
-                Check("Menu: start with Windows turns off", value == null, "value is [" + value + "]");
 
                 formField = null;
                 expectedForeground = IntPtr.Zero;
@@ -547,11 +549,8 @@ namespace Shaqlouba
             }, IntPtr.Zero);
             if (item == null) throw new InvalidOperationException("menu item [" + text + "] not found");
 
-            POINT back;
-            GetCursorPos(out back);
-            System.Windows.Rect bounds = item.Current.BoundingRectangle;
-            ClickAt((int)(bounds.Left + bounds.Width / 2), (int)(bounds.Top + bounds.Height / 2), false);
-            SetCursorPos(back.X, back.Y);
+            // Invoked rather than clicked: a notification banner can sit over the menu for a few seconds.
+            ((InvokePattern)item.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
         }
 
         static void EnsureAppForeground()
@@ -562,23 +561,27 @@ namespace Shaqlouba
             Console.WriteLine("  (foreground: [" + TitleOf(foreground) + "])");
         }
 
-        // Windows reports the ^ arrow's rectangle while the icon is hidden behind it. In that case open
-        // the flyout and click the icon there, the same way someone would on a first run.
+        // The icon is found by name in the taskbar's UI Automation tree, because hit-testing a point on
+        // the Windows 11 taskbar only yields the bar itself. While the icon is hidden behind the ^ arrow,
+        // Windows reports the arrow's rectangle for it: then open the flyout and click the icon there,
+        // the same way someone would on a first run.
         static void ClickTrayIcon(bool right)
         {
             POINT back;
             GetCursorPos(out back);
+            DismissNotifications();
 
-            RECT rect = FindTrayIconRect();
-            int x = (rect.Left + rect.Right) / 2, y = (rect.Top + rect.Bottom) / 2;
-            AutomationElement atPoint = AutomationElement.FromPoint(new System.Windows.Point(x, y));
-            if (!atPoint.Current.Name.Contains(AppLabel))
+            AutomationElement icon = FindButton(FindWindow("Shell_TrayWnd", null), AppLabel);
+            if (icon == null)
             {
+                RECT rect = FindTrayIconRect();
+                int arrowX = (rect.Left + rect.Right) / 2, arrowY = (rect.Top + rect.Bottom) / 2;
+
                 // A flyout left open by the previous step would close on this click, hence the second try.
                 IntPtr flyout = IntPtr.Zero;
                 for (int attempt = 0; attempt < 2 && flyout == IntPtr.Zero; attempt++)
                 {
-                    ClickAt(x, y, false);
+                    ClickAt(arrowX, arrowY, false);
                     var clock = Stopwatch.StartNew();
                     while (clock.ElapsedMilliseconds < 1500 && flyout == IntPtr.Zero)
                     {
@@ -590,24 +593,52 @@ namespace Shaqlouba
                     throw new InvalidOperationException("the tray flyout didn't open, foreground is [" + ClassOf(GetForegroundWindow()) + "]");
                 Wait(300);
 
-                AutomationElement icon = null;
-                foreach (AutomationElement element in AutomationElement.FromHandle(flyout).FindAll(TreeScope.Descendants, Condition.TrueCondition))
-                {
-                    if (element.Current.Name.Contains(AppLabel))
-                    {
-                        icon = element;
-                        break;
-                    }
-                }
+                icon = FindButton(flyout, AppLabel);
                 if (icon == null) throw new InvalidOperationException("the icon isn't in the tray flyout");
-
-                System.Windows.Rect bounds = icon.Current.BoundingRectangle;
-                x = (int)(bounds.Left + bounds.Width / 2);
-                y = (int)(bounds.Top + bounds.Height / 2);
             }
 
-            ClickAt(x, y, right);
+            ClickElement(icon, right);
             SetCursorPos(back.X, back.Y);
+        }
+
+        // Buttons only: the icon's tooltip is in the same tree under the same name once the mouse has hovered it.
+        static AutomationElement FindButton(IntPtr window, string text)
+        {
+            foreach (AutomationElement element in AutomationElement.FromHandle(window).FindAll(TreeScope.Descendants, Condition.TrueCondition))
+                if (element.Current.ControlType == ControlType.Button && element.Current.Name.Contains(text)) return element;
+            return null;
+        }
+
+        // Clicks the middle of an element once nothing else is on top of it. The app's balloon tips show
+        // as notification banners next to the tray, and one can sit over the flyout or the menu for a few
+        // seconds; a click there would land on the banner instead.
+        static void ClickElement(AutomationElement element, bool right)
+        {
+            System.Windows.Rect bounds = element.Current.BoundingRectangle;
+            int x = (int)(bounds.Left + bounds.Width / 2), y = (int)(bounds.Top + bounds.Height / 2);
+            string window = TopLevelClassOf(element);
+            var clock = Stopwatch.StartNew();
+            while (true)
+            {
+                AutomationElement atPoint = AutomationElement.FromPoint(new System.Windows.Point(x, y));
+                if (TopLevelClassOf(atPoint) == window) break;
+                if (clock.ElapsedMilliseconds > 15000)
+                    throw new InvalidOperationException("[" + atPoint.Current.Name + "] is covering [" + element.Current.Name + "]");
+                Wait(250);
+            }
+            ClickAt(x, y, right);
+        }
+
+        static string TopLevelClassOf(AutomationElement element)
+        {
+            TreeWalker walker = TreeWalker.RawViewWalker;
+            AutomationElement parent = walker.GetParent(element);
+            while (parent != null && parent != AutomationElement.RootElement)
+            {
+                element = parent;
+                parent = walker.GetParent(element);
+            }
+            return element.Current.ClassName;
         }
 
         static void ClickAt(int x, int y, bool right)
@@ -737,8 +768,34 @@ namespace Shaqlouba
         static void EnsureFocus()
         {
             if (expectedForeground == IntPtr.Zero) throw new InvalidOperationException("no target window");
+            if (GetForegroundWindow() != expectedForeground && DismissNotifications()) Focus(expectedForeground);
             if (GetForegroundWindow() != expectedForeground)
                 throw new InvalidOperationException("target lost focus to [" + ClassOf(GetForegroundWindow()) + "], refusing to send keys");
+        }
+
+        // Closes the app's own notification banners (its balloon tips): on some machines they take the
+        // focus, and they sit over the tray flyout and the menu. Returns whether any was closed.
+        static bool DismissNotifications()
+        {
+            bool closed = false;
+            EnumWindows((w, l) =>
+            {
+                if (ClassOf(w) != "Windows.UI.Core.CoreWindow" || !IsWindowVisible(w)) return true;
+                AutomationElement window = AutomationElement.FromHandle(w);
+                foreach (AutomationElement sender in window.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.AutomationIdProperty, "SenderName")))
+                {
+                    if (sender.Current.Name != AppLabel) continue;
+                    foreach (AutomationElement button in window.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.AutomationIdProperty, "DismissButton")))
+                    {
+                        ((InvokePattern)button.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
+                        closed = true;
+                    }
+                    break;
+                }
+                return true;
+            }, IntPtr.Zero);
+            if (closed) Wait(500);
+            return closed;
         }
 
         static void Focus(IntPtr window)
@@ -859,6 +916,7 @@ namespace Shaqlouba
 
         delegate bool EnumWindowsProc(IntPtr window, IntPtr param);
 
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindow(string className, string title);
         [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
         [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr window);
         [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr window);
